@@ -1,0 +1,25 @@
+# Usage: docker compose -f docker-compose.yml -f docker-compose.prod.yml up --build -d
+# Deploy ONLY behind an HTTPS reverse proxy. Configure FRONTEND_URL=https://your-domain and COOKIE_SECURE=true.
+services:
+  mailpit:
+    profiles: [development-only]
+    ports: []
+  frontend:
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-3000}:8080"
+  backend:
+    environment:
+      ENVIRONMENT: production
+      COOKIE_SECURE: "true"
+  worker:
+    environment:
+      ENVIRONMENT: production
+      COOKIE_SECURE: "true"
+  beat:
+    environment:
+      ENVIRONMENT: production
+      COOKIE_SECURE: "true"
+  migrate:
+    environment:
+      ENVIRONMENT: production
+      COOKIE_SECURE: "true"

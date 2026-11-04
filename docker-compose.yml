@@ -1,0 +1,126 @@
+name: cofree
+services:
+  postgres:
+    image: postgres:16.8-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: cofree
+      POSTGRES_USER: cofree
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Defina POSTGRES_PASSWORD no .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cofree -d cofree"]
+      interval: 8s
+      timeout: 5s
+      retries: 10
+    networks: [internal]
+  redis:
+    image: redis:7.4.2-alpine
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "128mb", "--maxmemory-policy", "noeviction"]
+    restart: unless-stopped
+    volumes: ["redis_data:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 8s
+      timeout: 4s
+      retries: 10
+    networks: [internal]
+  mailpit:
+    image: axllent/mailpit:v1.22.3
+    restart: unless-stopped
+    ports: ["127.0.0.1:8025:8025"]
+    networks: [internal]
+  migrate:
+    build: ./backend
+    command: ["alembic", "upgrade", "head"]
+    environment: &backend_env
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      DATABASE_URL: postgresql+psycopg://cofree:${POSTGRES_PASSWORD}@postgres:5432/cofree
+      REDIS_URL: redis://redis:6379/0
+      APP_SECRET: ${APP_SECRET:?Defina APP_SECRET no .env}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      SMTP_HOST: ${SMTP_HOST:-mailpit}
+      SMTP_PORT: ${SMTP_PORT:-1025}
+      SMTP_SENDER: ${SMTP_SENDER:-CoFree <no-reply@cofree.local>}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_STARTTLS: ${SMTP_STARTTLS:-false}
+      SMTP_SSL: ${SMTP_SSL:-false}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    networks: [internal]
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    environment: *backend_env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:8000/health',timeout=3)"]
+      interval: 20s
+      timeout: 6s
+      retries: 6
+    networks: [internal]
+    ports:
+      - "127.0.0.1:8000:8000"
+  worker:
+    build: ./backend
+    healthcheck:
+      test: ["CMD-SHELL", "celery -A app.tasks.celery inspect ping --destination=celery@$$HOSTNAME --timeout=3 2>/dev/null | grep -q pong"]
+      interval: 30s
+      timeout: 9s
+      start_period: 25s
+      retries: 3
+    command: ["celery", "-A", "app.tasks.celery", "worker", "--loglevel=info", "--concurrency=2"]
+    restart: unless-stopped
+    environment: *backend_env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    networks: [internal]
+  beat:
+    build: ./backend
+    healthcheck:
+      disable: true  # Beat has no HTTP endpoint; monitor its process and logs instead.
+    command: ["celery", "-A", "app.tasks.celery", "beat", "--loglevel=info", "--schedule=/tmp/cofree-celerybeat-schedule"]
+    restart: unless-stopped
+    environment: *backend_env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    networks: [internal]
+  backend-tests:
+    profiles: [tests]
+    build:
+      context: ./backend
+      target: testing
+    environment:
+      ENVIRONMENT: test
+      DATABASE_URL: sqlite:////tmp/test_cofree.db
+      SMTP_HOST: ""
+    networks: [internal]
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    ports: ["127.0.0.1:3000:8080"]
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks: [internal]
+networks:
+  internal:
+    driver: bridge
+volumes:
+  postgres_data:
+  redis_data:

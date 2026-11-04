@@ -1,0 +1,112 @@
+name: CoFree CI
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: '3.12'}
+      - name: Install backend dependencies
+        run: python -m pip install -r backend/requirements-dev.txt
+      - name: Ruff
+        run: cd backend && ruff check app tests
+      - name: Unit and security regression tests
+        run: cd backend && pytest -q --cov=app --cov-report=xml --junitxml=pytest.xml
+      - name: Bandit
+        run: bandit -r backend/app -x backend/tests -ll
+      - name: Semgrep static analysis
+        run: |
+          python -m pip install semgrep
+          semgrep scan --config p/python --config p/javascript --config p/typescript --error backend/app frontend/src
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: {name: backend-test-report, path: 'backend/pytest.xml'}
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: '22'}
+      - name: Install frontend dependencies
+        run: cd frontend && npm install --no-audit --no-fund
+      - name: Unit tests (password privacy and translated errors)
+        run: cd frontend && npm run test:unit
+      - name: Typecheck and production build
+        run: cd frontend && npm run build
+      - name: Dependency audit
+        run: cd frontend && npm audit --audit-level=high
+  docker-and-e2e:
+    runs-on: ubuntu-latest
+    needs: [backend, frontend]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare test environment
+        run: |
+          cp .env.example .env
+          sed -i "s/CHANGE_ME_WITH_A_LONG_RANDOM_PASSWORD/$(openssl rand -hex 24)/" .env
+          sed -i "s/CHANGE_ME_WITH_A_UNIQUE_RANDOM_VALUE_OF_AT_LEAST_32_CHARS/$(openssl rand -hex 32)/" .env
+      - name: Validate Docker Compose
+        run: docker compose config --quiet
+      - name: Build and start system
+        run: docker compose up --build -d
+      - name: Verify services
+        run: |
+          docker compose ps
+          curl --fail --retry 20 --retry-delay 3 --retry-connrefused http://localhost:3000/health
+      - uses: actions/setup-node@v4
+        with: {node-version: '22'}
+      - name: Install Playwright
+        run: cd frontend && npm install && npx playwright install --with-deps chromium
+      - name: E2E browser tests
+        run: cd frontend && npx playwright test --project=chromium
+      - name: Export logs
+        if: always()
+        run: docker compose logs --no-color > compose.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-and-docker-logs
+          path: |
+            frontend/playwright-report/
+            frontend/test-results/
+            compose.log
+      - name: Stop containers
+        if: always()
+        run: docker compose down
+  trivy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL,HIGH
+          exit-code: '1'
+          format: table
+  zap:
+    runs-on: ubuntu-latest
+    needs: [docker-and-e2e]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure local environment
+        run: |
+          cp .env.example .env
+          sed -i "s/CHANGE_ME_WITH_A_LONG_RANDOM_PASSWORD/$(openssl rand -hex 24)/" .env
+          sed -i "s/CHANGE_ME_WITH_A_UNIQUE_RANDOM_VALUE_OF_AT_LEAST_32_CHARS/$(openssl rand -hex 32)/" .env
+      - name: Start target
+        run: docker compose up --build -d
+      - name: OWASP ZAP baseline on local isolated application
+        uses: zaproxy/action-baseline@v0.14.0
+        with:
+          target: 'http://localhost:3000/'
+          allow_issue_writing: false
+          fail_action: true
+      - name: Tear down
+        if: always()
+        run: docker compose down
