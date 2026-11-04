@@ -49,8 +49,6 @@ A solução é um projeto da **Vela**, fábrica fictícia de soluções digitais
 
 ## 🖼️ Demonstração visual
 
-> **Como adicionar suas quatro capturas:** crie a pasta `docs/images/` na raiz do repositório, coloque as imagens nela com os nomes abaixo e faça o commit. Os caminhos já estão preparados usando `<img src="...">`. Você também pode trocar o `src` pelo caminho ou URL da sua preferência.
-
 ### 01 · Página inicial
 
 Apresentação da proposta do CoFree: proteção contínua, acessibilidade e privacidade por padrão.
